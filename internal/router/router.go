@@ -34,8 +34,8 @@ func SetupRoutes(e *echo.Echo, pgdb *gorm.DB, mgClient *mongo.Client, firebaseAu
 	// Health check - always accessible
 	e.GET("/health", handlers.HealthCheck)
 
-	e.GET("/", func(e *echo.Context) error {
-		return e.json(map[string]string{"message": "Hello, World!"})
+	e.GET("/", func(c echo.Context) error {
+		return c.JSON(200, map[string]string{"message": "Hello, World!"})
 	})
 	
 	// --- Unprotected routes for authentication (e.g., /register) ---
@@ -82,6 +82,14 @@ func SetupRoutes(e *echo.Echo, pgdb *gorm.DB, mgClient *mongo.Client, firebaseAu
 	likeHandler := handlers.NewLikeHandler(likeRepo, postRepo, userRepo)
 	likeHandler.RegisterLikeRoutes(api)
 	log.Println("Like routes configured.")
+
+	// --- Protected routes (require JWT authentication) ---
+	jwtApi := e.Group("/api/v1/jwt")
+	jwtApi.Use(middleware.JWTAuthMiddleware())
+	log.Println("JWT authentication middleware applied to /api/v1/jwt group.")
+
+	// Example: Move a route to be protected by JWT
+	jwtApi.GET("/users/search", userHandler.SearchUsers) // Now protected by JWTAuthMiddleware
 
 	log.Println("All routes configured.")
 }

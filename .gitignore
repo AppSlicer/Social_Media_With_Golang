@@ -41,11 +41,6 @@ dist/
 ehthumbs.db
 Thumbs.db
 
-# Docker
-Dockerfile
-Dockerfile.dev
-docker-compose.yml
-
 # Logs
 *.log
 tmp/

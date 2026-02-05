@@ -8,8 +8,9 @@ import (
 // UserRepository defines the interface for user data operations
 type UserRepository interface {
 	CreateUser(user *models.User) error
-	GetUserByID(id uint) (*models.User, error) // Changed from int to uint
+	GetUserByID(id uint) (*models.User, error)
 	GetUserByFirebaseUID(firebaseUID string) (*models.User, error)
+	GetUserByEmail(email string) (*models.User, error) // New method
 	GetUsers() ([]models.User, error)
 	UpdateUser(user *models.User) error
 	DeleteUser(id uint) error
@@ -32,7 +33,7 @@ func (r *PostgresUserRepository) CreateUser(user *models.User) error {
 }
 
 // GetUserByID retrieves a user by ID from PostgreSQL
-func (r *PostgresUserRepository) GetUserByID(id uint) (*models.User, error) { // Changed from int to uint
+func (r *PostgresUserRepository) GetUserByID(id uint) (*models.User, error) {
 	var user models.User
 	if err := r.db.First(&user, id).Error; err != nil {
 		return nil, err
@@ -44,6 +45,15 @@ func (r *PostgresUserRepository) GetUserByID(id uint) (*models.User, error) { //
 func (r *PostgresUserRepository) GetUserByFirebaseUID(firebaseUID string) (*models.User, error) {
 	var user models.User
 	if err := r.db.Where("firebase_uid = ?", firebaseUID).First(&user).Error; err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
+// GetUserByEmail retrieves a user by email from PostgreSQL
+func (r *PostgresUserRepository) GetUserByEmail(email string) (*models.User, error) {
+	var user models.User
+	if err := r.db.Where("email = ?", email).First(&user).Error; err != nil {
 		return nil, err
 	}
 	return &user, nil
@@ -64,7 +74,7 @@ func (r *PostgresUserRepository) UpdateUser(user *models.User) error {
 }
 
 // DeleteUser deletes a user by ID from PostgreSQL
-func (r *PostgresUserRepository) DeleteUser(id uint) error { // Changed from int to uint
+func (r *PostgresUserRepository) DeleteUser(id uint) error {
 	return r.db.Delete(&models.User{}, id).Error
 }
 
