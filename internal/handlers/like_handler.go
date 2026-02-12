@@ -10,17 +10,19 @@ import (
 
 // LikeHandler handles HTTP requests related to likes
 type LikeHandler struct {
-	likeRepository repositories.LikeRepository
-	postRepository repositories.PostRepository // To update like counts in posts
-	userRepository repositories.UserRepository // To fetch user details for likes
+	likeRepository         repositories.LikeRepository
+	postRepository         repositories.PostRepository
+	userRepository         repositories.UserRepository
+	notificationRepository repositories.NotificationRepository
 }
 
 // NewLikeHandler creates a new LikeHandler
-func NewLikeHandler(likeRepo repositories.LikeRepository, postRepo repositories.PostRepository, userRepo repositories.UserRepository) *LikeHandler {
+func NewLikeHandler(likeRepo repositories.LikeRepository, postRepo repositories.PostRepository, userRepo repositories.UserRepository, notifRepo repositories.NotificationRepository) *LikeHandler {
 	return &LikeHandler{
-		likeRepository: likeRepo,
-		postRepository: postRepo,
-		userRepository: userRepo,
+		likeRepository:         likeRepo,
+		postRepository:         postRepo,
+		userRepository:         userRepo,
+		notificationRepository: notifRepo,
 	}
 }
 
@@ -34,23 +36,19 @@ func (h *LikeHandler) RegisterLikeRoutes(g *echo.Group) {
 
 // LikePost handles liking a post
 func (h *LikeHandler) LikePost(c echo.Context) error {
-	firebaseUID := c.Get("firebaseUID").(string) // Get Firebase UID from middleware
+	currentUserID := getUserIDFromContext(c)
+	if currentUserID == 0 {
+		return echo.NewHTTPError(http.StatusUnauthorized, "User not authenticated")
+	}
 	postID := c.Param("post_id")
 
 	// Verify post exists
-	_, err := h.postRepository.GetPostByID(c.Request().Context(), postID)
+	post, err := h.postRepository.GetPostByID(c.Request().Context(), postID)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusNotFound, "Post not found")
 	}
 
-	// Get user ID from PostgreSQL using Firebase UID
-	user, err := h.userRepository.GetUserByFirebaseUID(firebaseUID)
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "Authenticated user not found in database")
-	}
-
-	// Check if user has already liked the post
-	hasLiked, err := h.likeRepository.HasUserLikedPost(postID, user.ID)
+	hasLiked, err := h.likeRepository.HasUserLikedPost(postID, currentUserID)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
@@ -60,54 +58,66 @@ func (h *LikeHandler) LikePost(c echo.Context) error {
 
 	like := &models.Like{
 		PostID: postID,
-		UserID: user.ID,
+		UserID: currentUserID,
 	}
 
 	if err := h.likeRepository.CreateLike(like); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
 
-	// Increment likes count in the post
 	go h.postRepository.IncrementLikesCount(c.Request().Context(), postID)
 
-	return c.JSON(http.StatusCreated, like)
+	// Create notification for post owner
+	if h.notificationRepository != nil {
+		actor, _ := h.userRepository.GetUserByID(currentUserID)
+		if actor != nil && post.UserID != "" {
+			recipient, err := h.userRepository.GetUserByFirebaseUID(post.UserID)
+			if err == nil && recipient.ID != currentUserID {
+				notif := &models.Notification{
+					Type:        "like",
+					ActorID:     currentUserID,
+					RecipientID: recipient.ID,
+					TargetID:    postID,
+					TargetType:  "post",
+					Message:     actor.DisplayName + " liked your post",
+				}
+				h.notificationRepository.CreateNotification(notif)
+			}
+		}
+	}
+
+	return c.JSON(http.StatusOK, echo.Map{"success": true, "data": echo.Map{"liked": true}})
 }
 
 // UnlikePost handles unliking a post
 func (h *LikeHandler) UnlikePost(c echo.Context) error {
-	firebaseUID := c.Get("firebaseUID").(string) // Get Firebase UID from middleware
+	currentUserID := getUserIDFromContext(c)
+	if currentUserID == 0 {
+		return echo.NewHTTPError(http.StatusUnauthorized, "User not authenticated")
+	}
 	postID := c.Param("post_id")
 
-	// Verify post exists
 	_, err := h.postRepository.GetPostByID(c.Request().Context(), postID)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusNotFound, "Post not found")
 	}
 
-	// Get user ID from PostgreSQL using Firebase UID
-	user, err := h.userRepository.GetUserByFirebaseUID(firebaseUID)
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "Authenticated user not found in database")
-	}
-
-	if err := h.likeRepository.DeleteLike(postID, user.ID); err != nil {
+	if err := h.likeRepository.DeleteLike(postID, currentUserID); err != nil {
 		if err.Error() == "like not found" {
 			return echo.NewHTTPError(http.StatusNotFound, "Like not found")
 		}
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
 
-	// Decrement likes count in the post
 	go h.postRepository.DecrementLikesCount(c.Request().Context(), postID)
 
-	return c.NoContent(http.StatusNoContent)
+	return c.JSON(http.StatusOK, echo.Map{"success": true, "data": echo.Map{"liked": false}})
 }
 
 // GetLikesCountForPost retrieves the total number of likes for a specific post
 func (h *LikeHandler) GetLikesCountForPost(c echo.Context) error {
 	postID := c.Param("post_id")
 
-	// Verify post exists
 	_, err := h.postRepository.GetPostByID(c.Request().Context(), postID)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusNotFound, "Post not found")
@@ -118,30 +128,26 @@ func (h *LikeHandler) GetLikesCountForPost(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
 
-	return c.JSON(http.StatusOK, echo.Map{"post_id": postID, "likes_count": count})
+	return c.JSON(http.StatusOK, echo.Map{"success": true, "data": echo.Map{"post_id": postID, "likes_count": count}})
 }
 
 // GetUserLikeStatusForPost checks if the authenticated user has liked a specific post
 func (h *LikeHandler) GetUserLikeStatusForPost(c echo.Context) error {
-	firebaseUID := c.Get("firebaseUID").(string) // Get Firebase UID from middleware
+	currentUserID := getUserIDFromContext(c)
+	if currentUserID == 0 {
+		return echo.NewHTTPError(http.StatusUnauthorized, "User not authenticated")
+	}
 	postID := c.Param("post_id")
 
-	// Verify post exists
 	_, err := h.postRepository.GetPostByID(c.Request().Context(), postID)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusNotFound, "Post not found")
 	}
 
-	// Get user ID from PostgreSQL using Firebase UID
-	user, err := h.userRepository.GetUserByFirebaseUID(firebaseUID)
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "Authenticated user not found in database")
-	}
-
-	hasLiked, err := h.likeRepository.HasUserLikedPost(postID, user.ID)
+	hasLiked, err := h.likeRepository.HasUserLikedPost(postID, currentUserID)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
 
-	return c.JSON(http.StatusOK, echo.Map{"post_id": postID, "user_id": user.ID, "has_liked": hasLiked})
+	return c.JSON(http.StatusOK, echo.Map{"success": true, "data": echo.Map{"post_id": postID, "has_liked": hasLiked}})
 }

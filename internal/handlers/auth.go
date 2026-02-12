@@ -38,13 +38,13 @@ func NewAuthHandler(userRepo repositories.UserRepository, firebaseAuthClient *au
 
 // RegisterAuthRoutes registers authentication-related routes
 func (h *AuthHandler) RegisterAuthRoutes(g *echo.Group) {
-	g.POST("/register", h.Register)             
-	g.POST("/signup", h.Signup)          
-	g.POST("/signin", h.SignIn)        
+	g.POST("/register", h.Register)
+	g.POST("/signup", h.Signup)
+	g.POST("/signin", h.SignIn)
 	g.POST("/firebase-login", h.FirebaseLogin)
 }
 
-// Register handles user registration with Firebase UID (legacy, might be replaced by FirebaseLogin)
+// Register handles user registration with Firebase UID
 func (h *AuthHandler) Register(c echo.Context) error {
 	var req models.CreateUserRequest
 
@@ -57,14 +57,13 @@ func (h *AuthHandler) Register(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
-	// Check if user with this Firebase UID already exists in our DB
 	_, err := h.userRepository.GetUserByFirebaseUID(req.FirebaseUID)
 	if err == nil {
 		return echo.NewHTTPError(http.StatusConflict, "User with this Firebase UID already registered")
 	}
 
 	user := &models.User{
-		Name:        req.Name,
+		DisplayName: req.Name,
 		Email:       req.Email,
 		Age:         req.Age,
 		FirebaseUID: req.FirebaseUID,
@@ -74,7 +73,7 @@ func (h *AuthHandler) Register(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
 
-	return c.JSON(http.StatusCreated, user)
+	return c.JSON(http.StatusCreated, echo.Map{"user": user})
 }
 
 // Signup handles local user registration with email and password
@@ -90,36 +89,33 @@ func (h *AuthHandler) Signup(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
-	// Check if user with this email already exists
 	_, err := h.userRepository.GetUserByEmail(req.Email)
 	if err == nil {
 		return echo.NewHTTPError(http.StatusConflict, "User with this email already registered")
 	}
 
-	// Hash the password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to hash password")
 	}
 
 	user := &models.User{
-		Name:     req.Name,
-		Email:    req.Email,
-		Age:      req.Age,
-		Password: string(hashedPassword),
+		DisplayName: req.Name,
+		Username:    req.Username,
+		Email:       req.Email,
+		Password:    string(hashedPassword),
 	}
 
 	if err := h.userRepository.CreateUser(user); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
 
-	// Generate and return JWT for the newly registered user
 	token, err := h.generateJWT(user)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to generate token after signup")
 	}
 
-	return c.JSON(http.StatusCreated, echo.Map{"token": token})
+	return c.JSON(http.StatusCreated, echo.Map{"token": token, "user": user})
 }
 
 // SignIn handles local user authentication with email and password
@@ -138,13 +134,11 @@ func (h *AuthHandler) SignIn(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
-	// Retrieve user by email
 	user, err := h.userRepository.GetUserByEmail(req.Email)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusUnauthorized, "User not found wiht email : " + req.Email)
+		return echo.NewHTTPError(http.StatusUnauthorized, "User not found with email: "+req.Email)
 	}
 
-	// Compare passwords
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
 		return echo.NewHTTPError(http.StatusUnauthorized, "Invalid password")
 	}
@@ -154,7 +148,7 @@ func (h *AuthHandler) SignIn(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to generate token")
 	}
 
-	return c.JSON(http.StatusOK, echo.Map{"token": token})
+	return c.JSON(http.StatusOK, echo.Map{"token": token, "user": user})
 }
 
 // FirebaseLoginRequest defines the request body for Firebase login
@@ -175,7 +169,6 @@ func (h *AuthHandler) FirebaseLogin(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
-	// Verify Firebase ID token
 	token, err := h.firebaseAuth.VerifyIDToken(context.Background(), req.IDToken)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusUnauthorized, "Invalid Firebase ID token")
@@ -188,20 +181,17 @@ func (h *AuthHandler) FirebaseLogin(c echo.Context) error {
 		name = displayName
 	}
 
-	// Try to find user by Firebase UID
 	user, err := h.userRepository.GetUserByFirebaseUID(firebaseUID)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
-			// User not found by Firebase UID, try by email
 			user, err = h.userRepository.GetUserByEmail(email)
 			if err != nil {
 				if err == gorm.ErrRecordNotFound {
-					// New user, create one
 					newUser := &models.User{
-						Name:        name,
+						DisplayName: name,
+						Username:    firebaseUID,
 						Email:       email,
 						FirebaseUID: firebaseUID,
-						Age:         0, // Default age, Firebase doesn't provide age directly
 					}
 					if err := h.userRepository.CreateUser(newUser); err != nil {
 						return echo.NewHTTPError(http.StatusInternalServerError, "Failed to create user")
@@ -211,7 +201,6 @@ func (h *AuthHandler) FirebaseLogin(c echo.Context) error {
 					return echo.NewHTTPError(http.StatusInternalServerError, "Database error")
 				}
 			} else {
-				// User found by email, update their Firebase UID
 				user.FirebaseUID = firebaseUID
 				if err := h.userRepository.UpdateUser(user); err != nil {
 					return echo.NewHTTPError(http.StatusInternalServerError, "Failed to update user with Firebase UID")
@@ -221,23 +210,21 @@ func (h *AuthHandler) FirebaseLogin(c echo.Context) error {
 			return echo.NewHTTPError(http.StatusInternalServerError, "Database error")
 		}
 	} else {
-		// User found by Firebase UID, update details if necessary
 		user.Email = email
 		if name != "" {
-			user.Name = name
+			user.DisplayName = name
 		}
 		if err := h.userRepository.UpdateUser(user); err != nil {
 			return echo.NewHTTPError(http.StatusInternalServerError, "Failed to update user details")
 		}
 	}
 
-	// Generate local JWT
 	localJWT, err := h.generateJWT(user)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to generate local JWT")
 	}
 
-	return c.JSON(http.StatusOK, echo.Map{"token": localJWT})
+	return c.JSON(http.StatusOK, echo.Map{"token": localJWT, "user": user})
 }
 
 // generateJWT generates a JWT token for a given user
@@ -246,7 +233,7 @@ func (h *AuthHandler) generateJWT(user *models.User) (string, error) {
 		UserID: user.ID,
 		Email:  user.Email,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * 72)), // Token expires in 72 hours
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * 72)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
 	}

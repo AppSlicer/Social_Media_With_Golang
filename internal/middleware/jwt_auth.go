@@ -19,17 +19,15 @@ func JWTAuthMiddleware() echo.MiddlewareFunc {
 				return echo.NewHTTPError(http.StatusUnauthorized, "Missing Authorization header")
 			}
 
-			// Expecting "Bearer <token>"
 			parts := strings.Split(authHeader, " ")
 			if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
 				return echo.NewHTTPError(http.StatusUnauthorized, "Invalid Authorization header format")
 			}
 			tokenString := parts[1]
 
-			// Get JWT Secret from environment or use default
 			jwtSecret := os.Getenv("JWT_SECRET")
 			if jwtSecret == "" {
-				jwtSecret = "supersecretjwtkey" // Must match the secret used for signing
+				jwtSecret = "supersecretjwtkey"
 			}
 
 			claims := &models.JwtCustomClaims{}
@@ -51,8 +49,9 @@ func JWTAuthMiddleware() echo.MiddlewareFunc {
 				return echo.NewHTTPError(http.StatusUnauthorized, "Invalid token")
 			}
 
-			// Store user claims in context
-			c.Set("user", claims)
+			// Store user claims in context for handlers to use
+			c.Set("user_claims", claims)
+			c.Set("user_id", claims.UserID)
 
 			return next(c)
 		}

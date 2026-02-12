@@ -2,7 +2,7 @@ package handlers
 
 import (
 	"net/http"
-	"strconv" // Added this import
+	"strconv"
 
 	"github.com/anonto42/nano-midea/backend/internal/models"
 	"github.com/anonto42/nano-midea/backend/internal/repositories"
@@ -23,44 +23,51 @@ func NewUserHandler(userRepo repositories.UserRepository) *UserHandler {
 
 // RegisterProfileRoutes registers user profile-related routes
 func (h *UserHandler) RegisterProfileRoutes(g *echo.Group) {
-	g.GET("/profile", h.GetProfile)    // Get own profile
-	g.PUT("/profile", h.UpdateProfile) // Update own profile
-	g.GET("/users/:id", h.GetUser)     // Get other user's profile by ID
-	g.DELETE("/profile", h.DeleteUser) // Delete own user profile
+	g.GET("/profile", h.GetProfile)
+	g.PUT("/profile", h.UpdateProfile)
+	g.GET("/users/suggested", h.GetSuggestedUsers)
+	g.GET("/users/:id", h.GetUser)
+	g.DELETE("/profile", h.DeleteUser)
 }
 
 func (h *UserHandler) GetUser(c echo.Context) error {
-	id, err := strconv.ParseUint(c.Param("id"), 10, 32) // Changed to ParseUint
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "Invalid user ID")
 	}
-	user, err := h.userRepository.GetUserByID(uint(id)) // Cast to uint
+	user, err := h.userRepository.GetUserByID(uint(id))
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return echo.NewHTTPError(http.StatusNotFound, "User profile not found")
 		}
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
-	return c.JSON(http.StatusOK, user)
+	return c.JSON(http.StatusOK, echo.Map{"success": true, "data": echo.Map{"user": user}})
 }
 
 // GetProfile retrieves the authenticated user's profile
 func (h *UserHandler) GetProfile(c echo.Context) error {
-	firebaseUID := c.Get("firebaseUID").(string) // Get Firebase UID from middleware
-	
-	user, err := h.userRepository.GetUserByFirebaseUID(firebaseUID)
+	userID := getUserIDFromContext(c)
+	if userID == 0 {
+		return echo.NewHTTPError(http.StatusUnauthorized, "User not authenticated")
+	}
+
+	user, err := h.userRepository.GetUserByID(userID)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return echo.NewHTTPError(http.StatusNotFound, "User profile not found")
 		}
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
-	return c.JSON(http.StatusOK, user)
+	return c.JSON(http.StatusOK, echo.Map{"success": true, "data": echo.Map{"user": user}})
 }
 
 // UpdateProfile updates the authenticated user's profile
 func (h *UserHandler) UpdateProfile(c echo.Context) error {
-	firebaseUID := c.Get("firebaseUID").(string) // Get Firebase UID from middleware
+	userID := getUserIDFromContext(c)
+	if userID == 0 {
+		return echo.NewHTTPError(http.StatusUnauthorized, "User not authenticated")
+	}
 
 	var req models.UpdateUserRequest
 	if err := c.Bind(&req); err != nil {
@@ -72,7 +79,7 @@ func (h *UserHandler) UpdateProfile(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
-	user, err := h.userRepository.GetUserByFirebaseUID(firebaseUID)
+	user, err := h.userRepository.GetUserByID(userID)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return echo.NewHTTPError(http.StatusNotFound, "User profile not found")
@@ -80,36 +87,40 @@ func (h *UserHandler) UpdateProfile(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
 
-	if req.Name != "" {
-		user.Name = req.Name
+	if req.DisplayName != "" {
+		user.DisplayName = req.DisplayName
+	}
+	if req.Username != "" {
+		user.Username = req.Username
 	}
 	if req.Email != "" {
 		user.Email = req.Email
 	}
-	if req.Age != 0 {
-		user.Age = req.Age
+	if req.Bio != "" {
+		user.Bio = req.Bio
+	}
+	if req.AvatarURL != "" {
+		user.AvatarURL = req.AvatarURL
+	}
+	if req.IsPrivate != nil {
+		user.IsPrivate = *req.IsPrivate
 	}
 
 	if err := h.userRepository.UpdateUser(user); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
 
-	return c.JSON(http.StatusOK, user)
+	return c.JSON(http.StatusOK, echo.Map{"success": true, "data": echo.Map{"user": user}})
 }
 
 // DeleteUser deletes the authenticated user's profile
 func (h *UserHandler) DeleteUser(c echo.Context) error {
-	firebaseUID := c.Get("firebaseUID").(string) // Get Firebase UID from middleware
-
-	user, err := h.userRepository.GetUserByFirebaseUID(firebaseUID)
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return echo.NewHTTPError(http.StatusNotFound, "User profile not found")
-		}
-		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	userID := getUserIDFromContext(c)
+	if userID == 0 {
+		return echo.NewHTTPError(http.StatusUnauthorized, "User not authenticated")
 	}
 
-	if err := h.userRepository.DeleteUser(user.ID); err != nil { // user.ID is already uint
+	if err := h.userRepository.DeleteUser(userID); err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return echo.NewHTTPError(http.StatusNotFound, "User profile not found")
 		}
@@ -119,7 +130,7 @@ func (h *UserHandler) DeleteUser(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-// SearchUsers searches for users by a query string (email or name)
+// SearchUsers searches for users by a query string
 func (h *UserHandler) SearchUsers(c echo.Context) error {
 	query := c.QueryParam("q")
 	if query == "" {
@@ -131,5 +142,41 @@ func (h *UserHandler) SearchUsers(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
 
-	return c.JSON(http.StatusOK, users)
+	compact := make([]models.UserCompact, len(users))
+	for i, u := range users {
+		compact[i] = u.ToCompact()
+	}
+
+	return c.JSON(http.StatusOK, echo.Map{"success": true, "data": echo.Map{"users": compact}})
+}
+
+// GetSuggestedUsers returns suggested users to follow
+func (h *UserHandler) GetSuggestedUsers(c echo.Context) error {
+	users, err := h.userRepository.GetUsers()
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+
+	limit := 10
+	if len(users) < limit {
+		limit = len(users)
+	}
+
+	compact := make([]models.UserCompact, limit)
+	for i := 0; i < limit; i++ {
+		compact[i] = users[i].ToCompact()
+	}
+
+	return c.JSON(http.StatusOK, echo.Map{"success": true, "data": echo.Map{"users": compact}})
+}
+
+// getUserIDFromContext extracts user ID from JWT context
+func getUserIDFromContext(c echo.Context) uint {
+	if claims, ok := c.Get("user_claims").(*models.JwtCustomClaims); ok {
+		return claims.UserID
+	}
+	if uid, ok := c.Get("user_id").(uint); ok {
+		return uid
+	}
+	return 0
 }
